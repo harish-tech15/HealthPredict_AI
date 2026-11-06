@@ -1,7 +1,9 @@
-
 streamlit
 tensorflow
 numpy
 pandas
 scikit-learn
 joblib
+google-genai<3.0.0
+reportlab
+openpyxl
