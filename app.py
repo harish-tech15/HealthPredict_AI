@@ -1,809 +1,1079 @@
-
-import streamlit as st
-import numpy as np
-import pandas as pd
-import joblib
-import tensorflow as tf
+import os
+import io
+import pickle
 from datetime import datetime
 
-# ==================================================
-# HEALTHPREDICT AI 3.0
-# Existing ANN model and scaler are preserved
-# ==================================================
+import streamlit as st
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+
+from google import genai
+from google.genai import types
+
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+
+
+# --------------------------------------------------
+# 1. APP CONFIGURATION
+# --------------------------------------------------
 
 st.set_page_config(
-    page_title="HealthPredict AI 3.0",
+    page_title="HealthPredict AI 4.0",
     page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ---------------- TRANSLATIONS ----------------
+MODEL_PATH = "health_predict_model.keras"
+SCALER_PATH = "health_scaler.pkl"
+FEATURES_PATH = "health_features.pkl"
+
+MODEL_NAME = "gemini-3.8-flash"
+
+FEATURE_LABELS = {
+    "Pregnancies": "Pregnancies",
+    "Glucose": "Glucose (mg/dL)",
+    "BloodPressure": "Blood Pressure (mm Hg)",
+    "SkinThickness": "Skin Thickness (mm)",
+    "Insulin": "Insulin (mu U/ml)",
+    "BMI": "BMI",
+    "DiabetesPedigreeFunction": "Diabetes Pedigree Function",
+    "Age": "Age"
+}
 
 TEXT = {
-    "app_name": ("HealthPredict AI", "HealthPredict AI"),
-    "tagline": (
-        "Your intelligent educational health companion",
-        "உங்கள் AI சுகாதாரக் கல்வி உதவியாளர்"
-    ),
-    "language": ("Language / மொழி", "மொழி / Language"),
-    "english": ("English", "English"),
-    "tamil": ("தமிழ்", "தமிழ்"),
-    "theme": ("Color Theme", "நிறத் தோற்றம்"),
-    "navigation": ("Navigation", "பக்கங்கள்"),
-    "dashboard": ("Dashboard", "முகப்பு"),
-    "prediction": ("Diabetes Prediction", "சர்க்கரை நோய் கணிப்பு"),
-    "assistant": ("Health Assistant", "சுகாதார உதவியாளர்"),
-    "bmi": ("BMI Calculator", "BMI கணிப்பான்"),
-    "history": ("Prediction History", "கணிப்பு வரலாறு"),
-    "learning": ("Health Learning Center", "சுகாதாரக் கற்றல் மையம்"),
-    "about": ("About", "எங்களைப் பற்றி"),
-    "welcome": (
-        "Welcome to your intelligent health dashboard.",
-        "உங்கள் AI சுகாதார dashboard-க்கு வரவேற்கிறோம்."
-    ),
-    "overview": ("Your Project Overview", "உங்கள் திட்டத்தின் விவரங்கள்"),
-    "model": ("AI Model", "AI மாடல்"),
-    "dataset": ("Dataset", "தரவுத்தொகுப்பு"),
-    "technology": ("Technology", "தொழில்நுட்பம்"),
-    "features": ("Platform Features", "தளத்தின் அம்சங்கள்"),
-    "enter_data": (
-        "Enter your health measurements below.",
-        "கீழே உங்கள் உடல்நல அளவீடுகளை உள்ளிடுங்கள்."
-    ),
-    "pregnancies": ("Pregnancies", "கர்ப்ப எண்ணிக்கை"),
-    "glucose": ("Glucose", "குளுக்கோஸ்"),
-    "bp": ("Blood Pressure", "இரத்த அழுத்தம்"),
-    "skin": ("Skin Thickness", "தோல் தடிமன்"),
-    "insulin": ("Insulin", "இன்சுலின்"),
-    "bmi_label": ("BMI", "உடல் நிறை குறியீடு (BMI)"),
-    "dpf": ("Diabetes Pedigree Function", "குடும்ப நீரிழிவு தொடர்பான அளவு"),
-    "age": ("Age", "வயது"),
-    "analyze": ("Analyze Health Data", "உடல்நலத் தரவை ஆய்வு செய்"),
-    "result": ("AI Prediction Result", "AI கணிப்பு முடிவு"),
-    "higher": (
-        "Higher predicted risk category",
-        "அதிக கணிப்பு அபாய வகை"
-    ),
-    "lower": (
-        "Lower predicted risk category",
-        "குறைந்த கணிப்பு அபாய வகை"
-    ),
-    "score": ("Model Output Score", "மாடல் வெளியீட்டு மதிப்பு"),
-    "history_empty": (
-        "No predictions yet. Make your first prediction.",
-        "இதுவரை கணிப்புகள் இல்லை. முதல் கணிப்பைச் செய்யுங்கள்."
-    ),
-    "total": ("Total Predictions", "மொத்த கணிப்புகள்"),
-    "download": ("Download CSV Report", "CSV அறிக்கையைப் பதிவிறக்கு"),
-    "ask": (
-        "Ask about diabetes, BMI, food or exercise...",
-        "நீரிழிவு, BMI, உணவு அல்லது உடற்பயிற்சி பற்றி கேளுங்கள்..."
-    ),
-    "clear": ("Clear Conversation", "உரையாடலை அழி"),
-    "bmi_weight": ("Weight (kg)", "எடை (கிலோ)"),
-    "bmi_height": ("Height (cm)", "உயரம் (செ.மீ.)"),
-    "calculate": ("Calculate BMI", "BMI கணக்கிடு"),
-    "your_bmi": ("Your BMI", "உங்கள் BMI"),
-    "learning_title": ("Learn About Health", "உடல்நலம் பற்றி அறிந்துகொள்ளுங்கள்"),
-    "disclaimer": (
-        "Educational demonstration only. This application is not a medical diagnostic tool. Its output is not a clinically validated probability. Consult a qualified healthcare professional for testing and medical advice.",
-        "இது கல்வி நோக்கத்திற்கான செயலி மட்டுமே. மருத்துவ நோயறிதல் கருவி அல்ல. இதன் முடிவு மருத்துவ ரீதியாக உறுதிப்படுத்தப்பட்ட தனிப்பட்ட அபாய மதிப்பு அல்ல. பரிசோதனை மற்றும் மருத்துவ ஆலோசனைக்கு தகுதியான மருத்துவரை அணுகவும்."
-    ),
-    "about_text": (
-        "HealthPredict AI is an educational AI/ML project demonstrating diabetes prediction using an Artificial Neural Network.",
-        "HealthPredict AI என்பது Artificial Neural Network மூலம் நீரிழிவு கணிப்பை விளக்கும் AI/ML கல்வித் திட்டமாகும்."
-    )
+    "English": {
+        "dashboard": "🏠 Dashboard",
+        "prediction": "🩺 Diabetes Risk Prediction",
+        "assistant": "🤖 AI Health Assistant",
+        "food": "🥗 Healthy Food Guide",
+        "exercise": "🏃 Exercise & Fitness",
+        "learning": "📚 Health Learning Center",
+        "reports": "📊 Reports & Downloads",
+        "about": "ℹ️ About",
+        "welcome": "Your AI-powered health and wellness companion",
+        "language": "Language",
+        "theme": "Theme",
+        "ask": "Ask a health-related question...",
+        "send": "Send message",
+        "clear": "Clear chat",
+        "bmi": "BMI Calculator",
+        "calculate": "Calculate BMI",
+        "name": "Name (optional)",
+        "age": "Age",
+        "height": "Height (cm)",
+        "weight": "Weight (kg)",
+        "predict": "Predict diabetes risk",
+        "result": "Prediction result",
+        "low": "Lower predicted risk",
+        "high": "Higher predicted risk",
+        "report": "Download your health report",
+        "disclaimer": "Educational information only. Not a medical diagnosis."
+    },
+    "தமிழ்": {
+        "dashboard": "🏠 முகப்பு",
+        "prediction": "🩺 நீரிழிவு அபாய கணிப்பு",
+        "assistant": "🤖 AI சுகாதார உதவியாளர்",
+        "food": "🥗 ஆரோக்கிய உணவு வழிகாட்டி",
+        "exercise": "🏃 உடற்பயிற்சி & உடல்நலம்",
+        "learning": "📚 சுகாதார அறிவு மையம்",
+        "reports": "📊 அறிக்கைகள் & பதிவிறக்கம்",
+        "about": "ℹ️ எங்களைப் பற்றி",
+        "welcome": "உங்கள் AI சுகாதார மற்றும் நலவாழ்வு உதவியாளர்",
+        "language": "மொழி",
+        "theme": "நிறத் தீம்",
+        "ask": "உடல்நலம் தொடர்பான கேள்வியைக் கேளுங்கள்...",
+        "send": "செய்தி அனுப்பு",
+        "clear": "உரையாடலை அழி",
+        "bmi": "BMI கணக்கீடு",
+        "calculate": "BMI கணக்கிடு",
+        "name": "பெயர் (விருப்பம்)",
+        "age": "வயது",
+        "height": "உயரம் (செ.மீ.)",
+        "weight": "எடை (கிலோ)",
+        "predict": "நீரிழிவு அபாயத்தைக் கணிக்கவும்",
+        "result": "கணிப்பு முடிவு",
+        "low": "குறைவான கணிக்கப்பட்ட அபாயம்",
+        "high": "அதிகமான கணிக்கப்பட்ட அபாயம்",
+        "report": "சுகாதார அறிக்கையைப் பதிவிறக்கவும்",
+        "disclaimer": "இது கல்வி நோக்கத்திற்கான தகவல் மட்டுமே. மருத்துவ நோயறிதல் அல்ல."
+    }
 }
 
 
 def T(key):
-    language = st.session_state.get("language", "English")
-    index = 1 if language == "தமிழ்" else 0
-    return TEXT[key][index]
+    return TEXT[language].get(key, key)
 
 
-# ---------------- SESSION STATE ----------------
-
-if "language" not in st.session_state:
-    st.session_state.language = "English"
-
-if "theme" not in st.session_state:
-    st.session_state.theme = "Neon Teal + Purple"
-
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-if "chat" not in st.session_state:
-    st.session_state.chat = []
-
-
-# ---------------- SIDEBAR SETTINGS ----------------
+# --------------------------------------------------
+# 2. SIDEBAR SETTINGS
+# --------------------------------------------------
 
 st.sidebar.markdown("# 🩺 HealthPredict AI")
-st.sidebar.caption("Version 3.0 | AI Healthcare Platform")
+st.sidebar.caption("Version 4.0 | Smart Health & Wellness")
 
-st.sidebar.divider()
-
-language_choice = st.sidebar.selectbox(
-    T("language"),
+language = st.sidebar.selectbox(
+    "🌐 Language / மொழி",
     ["English", "தமிழ்"],
-    index=0 if st.session_state.language == "English" else 1
+    index=0
 )
 
-st.session_state.language = language_choice
-
-theme_choice = st.sidebar.selectbox(
-    T("theme"),
+theme = st.sidebar.selectbox(
+    "🎨 Theme",
     [
         "Neon Teal + Purple",
         "Royal Purple + Black",
-        "Clean White + Blue"
-    ],
-    index=[
-        "Neon Teal + Purple",
-        "Royal Purple + Black",
-        "Clean White + Blue"
-    ].index(st.session_state.theme)
+        "Ocean Blue",
+        "Clean Light"
+    ]
 )
-
-st.session_state.theme = theme_choice
-
-
-# ---------------- THEME COLORS ----------------
 
 themes = {
     "Neon Teal + Purple": {
-        "bg": "#080d1b",
-        "panel": "#142239",
-        "accent": "#45e6e0",
-        "secondary": "#9b8cff",
-        "text": "#f4f7ff"
+        "bg": "#07131F",
+        "card": "#102536",
+        "primary": "#22D3C5",
+        "secondary": "#A78BFA",
+        "text": "#F1F5F9"
     },
     "Royal Purple + Black": {
-        "bg": "#100d1c",
-        "panel": "#211735",
-        "accent": "#b18aff",
-        "secondary": "#ed8cff",
-        "text": "#faf5ff"
+        "bg": "#100B1D",
+        "card": "#211633",
+        "primary": "#C084FC",
+        "secondary": "#F0ABFC",
+        "text": "#FAF5FF"
     },
-    "Clean White + Blue": {
-        "bg": "#f3f7ff",
-        "panel": "#ffffff",
-        "accent": "#2563eb",
-        "secondary": "#0ea5e9",
-        "text": "#172554"
+    "Ocean Blue": {
+        "bg": "#071B32",
+        "card": "#102D4C",
+        "primary": "#38BDF8",
+        "secondary": "#67E8F9",
+        "text": "#F0F9FF"
+    },
+    "Clean Light": {
+        "bg": "#F3F7FB",
+        "card": "#FFFFFF",
+        "primary": "#087E8B",
+        "secondary": "#6655CC",
+        "text": "#172033"
     }
 }
 
-colors = themes[theme_choice]
+colorset = themes[theme]
 
 st.markdown(
-    """
+    f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
-    :root {
-        --background: THEME_BG;
-        --panel: THEME_PANEL;
-        --accent: THEME_ACCENT;
-        --secondary: THEME_SECONDARY;
-        --main-text: THEME_TEXT;
-    }
-
-    .stApp {
-        background:
-            radial-gradient(ellipse at 5% 0%, var(--panel), transparent 40%),
-            var(--background);
-        color: var(--main-text);
-        font-family: 'Inter', sans-serif;
-    }
-
-    [data-testid="stSidebar"] {
-        background: var(--panel);
-        border-right: 1px solid var(--accent);
-    }
-
-    h1 {
-        color: var(--accent) !important;
-        font-weight: 800 !important;
-        letter-spacing: -1px;
-    }
-
-    h2, h3 {
-        color: var(--main-text) !important;
-    }
-
-    [data-testid="stMetric"] {
-        background: var(--panel);
-        border: 1px solid var(--accent);
-        border-radius: 18px;
+    .stApp {{
+        background: {colorset['bg']};
+        color: {colorset['text']};
+    }}
+    [data-testid="stSidebar"] {{
+        background: {colorset['card']};
+    }}
+    .hero {{
+        padding: 28px;
+        border-radius: 20px;
+        background: linear-gradient(
+            120deg,
+            {colorset['card']},
+            {colorset['bg']}
+        );
+        border: 1px solid {colorset['primary']};
+        margin-bottom: 20px;
+    }}
+    .hero h1 {{
+        color: {colorset['primary']};
+        margin-bottom: 5px;
+    }}
+    .feature-card {{
         padding: 20px;
-        box-shadow: 0 8px 28px rgba(0,0,0,0.12);
-    }
-
-    [data-testid="stMetricValue"] {
-        color: var(--accent) !important;
-        font-weight: 800;
-    }
-
-    .stButton > button,
-    .stFormSubmitButton > button {
-        background: linear-gradient(100deg, var(--accent), var(--secondary));
-        color: #101426;
-        border: none;
+        border-radius: 16px;
+        background: {colorset['card']};
+        border: 1px solid {colorset['secondary']};
+        min-height: 130px;
+        margin-bottom: 12px;
+    }}
+    .feature-card h3 {{
+        color: {colorset['primary']};
+    }}
+    div.stButton > button {{
         border-radius: 12px;
-        min-height: 44px;
-        font-weight: 700;
-        transition: 0.2s ease;
-    }
-
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 0 18px var(--accent);
-    }
-
-    [data-testid="stChatMessage"] {
-        background: var(--panel);
-        border: 1px solid var(--accent);
-        border-radius: 15px;
-    }
-
-    [data-testid="stProgressBar"] > div > div {
-        background: var(--accent);
-    }
-
-    hr {
-        border-color: var(--accent);
-        opacity: 0.3;
-    }
-
+        border: 1px solid {colorset['primary']};
+        font-weight: 600;
+    }}
+    div[data-testid="stMetric"] {{
+        background: {colorset['card']};
+        padding: 15px;
+        border-radius: 14px;
+        border: 1px solid {colorset['primary']};
+    }}
     </style>
-    """.replace("THEME_BG", colors["bg"])
-       .replace("THEME_PANEL", colors["panel"])
-       .replace("THEME_ACCENT", colors["accent"])
-       .replace("THEME_SECONDARY", colors["secondary"])
-       .replace("THEME_TEXT", colors["text"]),
+    """,
     unsafe_allow_html=True
 )
 
 
-# ---------------- LOAD EXISTING MODEL ----------------
+# --------------------------------------------------
+# 3. LOAD EXISTING DIABETES MODEL FILES
+# --------------------------------------------------
 
 @st.cache_resource
-def load_resources():
-    model = tf.keras.models.load_model("health_predict_model.keras")
-    scaler = joblib.load("health_scaler.pkl")
-    features = joblib.load("health_features.pkl")
+def load_diabetes_files():
+    required = [MODEL_PATH, SCALER_PATH, FEATURES_PATH]
 
-    feature_names = list(features)
+    missing = [file for file in required if not os.path.exists(file)]
 
-    expected_features = [
-        "Pregnancies",
-        "Glucose",
-        "BloodPressure",
-        "SkinThickness",
-        "Insulin",
-        "BMI",
-        "DiabetesPedigreeFunction",
-        "Age"
-    ]
-
-    if feature_names != expected_features:
-        raise ValueError(
-            "Feature order does not match the trained model. "
-            "Check health_features.pkl."
+    if missing:
+        raise FileNotFoundError(
+            "Missing model files: " + ", ".join(missing)
         )
 
-    return model, scaler, feature_names
+    model = tf.keras.models.load_model(MODEL_PATH)
 
+    with open(SCALER_PATH, "rb") as file:
+        scaler = pickle.load(file)
+
+    with open(FEATURES_PATH, "rb") as file:
+        feature_names = pickle.load(file)
+
+    return model, scaler, list(feature_names)
+
+
+model = None
+scaler = None
+feature_names = None
+model_error = None
 
 try:
-    model, scaler, features = load_resources()
-    model_loaded = True
+    model, scaler, feature_names = load_diabetes_files()
 except Exception as error:
-    model_loaded = False
-    st.error("Unable to load the existing ANN model.")
-    st.code(str(error))
-    st.info(
-        "Check that health_predict_model.keras, "
-        "health_scaler.pkl and health_features.pkl "
-        "are present in the repository root."
-    )
-    st.stop()
+    model_error = str(error)
 
 
-# ---------------- NAVIGATION ----------------
+# --------------------------------------------------
+# 4. SESSION STATE
+# --------------------------------------------------
 
-st.sidebar.divider()
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-page_options = [
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+if "last_prediction" not in st.session_state:
+    st.session_state.last_prediction = None
+
+
+# --------------------------------------------------
+# 5. NAVIGATION
+# --------------------------------------------------
+
+pages = [
     T("dashboard"),
     T("prediction"),
     T("assistant"),
-    T("bmi"),
-    T("history"),
+    T("food"),
+    T("exercise"),
     T("learning"),
+    T("reports"),
     T("about")
 ]
 
-page = st.sidebar.radio(
-    T("navigation"),
-    page_options
-)
+page = st.sidebar.radio("Navigation", pages)
 
 st.sidebar.divider()
-st.sidebar.caption("Powered by TensorFlow + Streamlit")
+st.sidebar.caption("🔐 Your API key is stored in Streamlit Secrets.")
+st.sidebar.caption("⚠️ For educational use only.")
 
 
-# ---------------- DASHBOARD ----------------
+# --------------------------------------------------
+# 6. HELPER FUNCTIONS
+# --------------------------------------------------
+
+def calculate_bmi(weight, height_cm):
+    height_m = height_cm / 100
+    return weight / (height_m * height_m)
+
+
+def bmi_category(bmi):
+    if bmi < 18.5:
+        return "Underweight"
+    elif bmi < 25:
+        return "Normal range"
+    elif bmi < 30:
+        return "Overweight"
+    return "Obesity range"
+
+
+def get_gemini_client():
+    try:
+        api_key = st.secrets.get("GOOGLE_API_KEY", "")
+    except Exception:
+        api_key = os.getenv("GOOGLE_API_KEY", "")
+
+    if not api_key:
+        return None
+
+    return genai.Client(api_key=api_key)
+
+
+def ask_gemini(question):
+    client = get_gemini_client()
+
+    if client is None:
+        return (
+            "Gemini API key is missing. Add GOOGLE_API_KEY "
+            "in Streamlit Cloud → App settings → Secrets."
+        )
+
+    system_instruction = """
+    You are HealthPredict AI, a careful health education assistant.
+
+    Rules:
+    1. Answer only health, wellness, nutrition, fitness and medical
+       education questions.
+    2. If asked about unrelated topics, politely explain that you
+       are designed for health-related questions.
+    3. Support Tamil and English. Reply in the language used by
+       the user.
+    4. Explain common symptoms and possible causes as general
+       information, never as a confirmed diagnosis.
+    5. Never claim to detect or diagnose every disease.
+    6. Never prescribe medicines, dosages or treatment changes.
+    7. Encourage users to consult a qualified healthcare professional.
+    8. For emergency warning signs such as severe chest pain,
+       difficulty breathing, stroke symptoms, unconsciousness or
+       severe bleeding, advise immediate emergency medical help.
+    9. Give practical, safe, evidence-informed general guidance.
+    10. Keep answers clear and easy to understand.
+    """
+
+    previous_messages = ""
+
+    for item in st.session_state.chat_history[-8:]:
+        previous_messages += (
+            f"\n{item['role'].upper()}: {item['content']}\n"
+        )
+
+    prompt = (
+        previous_messages
+        + "\nUSER: "
+        + question
+    )
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.4,
+            max_output_tokens=1200
+        )
+    )
+
+    return response.text or "Sorry, I could not generate a response."
+
+
+def create_pdf_report():
+    buffer = io.BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=40,
+        leftMargin=40,
+        topMargin=40,
+        bottomMargin=40
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#087E8B")
+    )
+
+    story = [
+        Paragraph("HealthPredict AI - Health Report", title_style),
+        Spacer(1, 12),
+        Paragraph(
+            "Generated: " + datetime.now().strftime("%d-%m-%Y %H:%M"),
+            styles["Normal"]
+        ),
+        Spacer(1, 15)
+    ]
+
+    last = st.session_state.last_prediction
+
+    if last:
+        report_data = [
+            ["Item", "Value"],
+            ["Diabetes risk result", last["result"]],
+            ["Model score", last["score"]],
+            ["Age", last["age"]],
+            ["BMI", last["bmi"]]
+        ]
+
+        table = Table(report_data, colWidths=[220, 220])
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#087E8B")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("PADDING", (0, 0), (-1, -1), 8)
+        ]))
+
+        story.append(Paragraph("Latest Prediction", styles["Heading2"]))
+        story.append(table)
+    else:
+        story.append(
+            Paragraph(
+                "No diabetes prediction has been recorded in this session.",
+                styles["Normal"]
+            )
+        )
+
+    story.append(Spacer(1, 18))
+    story.append(Paragraph("Prediction History", styles["Heading2"]))
+
+    history_data = [["Date", "Result", "Score"]]
+
+    for item in st.session_state.history:
+        history_data.append([
+            item["date"],
+            item["result"],
+            item["score"]
+        ])
+
+    history_table = Table(history_data, repeatRows=1)
+    history_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#6655CC")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("PADDING", (0, 0), (-1, -1), 6)
+    ]))
+
+    story.append(history_table)
+    story.append(Spacer(1, 20))
+    story.append(
+        Paragraph(
+            "IMPORTANT: This report is for educational purposes only. "
+            "It is not a medical diagnosis. Consult a qualified healthcare "
+            "professional for medical advice.",
+            styles["Italic"]
+        )
+    )
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def create_excel_report():
+    workbook = Workbook()
+
+    summary = workbook.active
+    summary.title = "Health Summary"
+
+    summary.append(["HealthPredict AI - Health Summary"])
+    summary.append(["Generated", datetime.now().strftime("%d-%m-%Y %H:%M")])
+
+    last = st.session_state.last_prediction
+
+    if last:
+        summary.append(["Latest prediction", last["result"]])
+        summary.append(["Model score", last["score"]])
+        summary.append(["Age", last["age"]])
+        summary.append(["BMI", last["bmi"]])
+    else:
+        summary.append(["Latest prediction", "No prediction yet"])
+
+    history_sheet = workbook.create_sheet("Prediction History")
+    history_sheet.append(["Date", "Result", "Score", "Age", "BMI"])
+
+    for item in st.session_state.history:
+        history_sheet.append([
+            item["date"],
+            item["result"],
+            item["score"],
+            item["age"],
+            item["bmi"]
+        ])
+
+    for sheet in workbook.worksheets:
+        sheet.freeze_panes = "A2"
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(
+                start_color="087E8B",
+                end_color="087E8B",
+                fill_type="solid"
+            )
+            cell.alignment = Alignment(horizontal="center")
+
+        for column in sheet.columns:
+            max_length = max(
+                len(str(cell.value or "")) for cell in column
+            )
+            sheet.column_dimensions[column[0].column_letter].width = (
+                min(max_length + 4, 35)
+            )
+
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
+# --------------------------------------------------
+# 7. DASHBOARD
+# --------------------------------------------------
 
 if page == T("dashboard"):
 
-    st.title("🩺 HealthPredict AI 3.0")
-    st.subheader(T("tagline"))
-    st.write(T("welcome"))
+    st.markdown(
+        f"""
+        <div class="hero">
+            <h1>🩺 HealthPredict AI 4.0</h1>
+            <h3>{T("welcome")}</h3>
+            <p>🤖 AI Assistant | 🥗 Nutrition | 🏃 Fitness | 📊 Reports</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric(T("model"), "ANN")
-    col2.metric(T("dataset"), "Pima Indians")
-    col3.metric(T("technology"), "AI / ML")
-
-    st.divider()
-    st.subheader(T("overview"))
-
-    total = len(st.session_state.history)
-
-    high_count = sum(
-        1 for item in st.session_state.history
-        if item["Result"] == "Higher predicted risk"
+    col1.metric("🩺 Predictions", len(st.session_state.history))
+    col2.metric("💬 Chat messages", len(st.session_state.chat_history))
+    col3.metric(
+        "🧠 Diabetes model",
+        "Loaded" if model is not None else "Not loaded"
     )
 
-    low_count = total - high_count
+    st.subheader("✨ Explore HealthPredict AI")
 
-    a, b, c = st.columns(3)
+    c1, c2 = st.columns(2)
 
-    a.metric(T("total"), total)
-    b.metric("Higher category", high_count)
-    c.metric("Lower category", low_count)
-
-    st.divider()
-    st.subheader(T("features"))
-
-    card1, card2 = st.columns(2)
-
-    with card1:
-        st.info(
-            "🔍 **Diabetes Prediction**\n\n"
-            "Explore an educational prediction using your trained ANN model."
+    with c1:
+        st.markdown(
+            '<div class="feature-card"><h3>🤖 AI Health Assistant</h3>'
+            '<p>Ask health-related questions in Tamil or English.</p></div>',
+            unsafe_allow_html=True
         )
-        st.info(
-            "💬 **Health Assistant**\n\n"
-            "Learn general health information in Tamil or English."
+        st.markdown(
+            '<div class="feature-card"><h3>🥗 Healthy Food Guide</h3>'
+            '<p>Explore balanced meals and nutrition tips.</p></div>',
+            unsafe_allow_html=True
         )
 
-    with card2:
-        st.info(
-            "📊 **Analytics**\n\n"
-            "Review session prediction history and download CSV."
+    with c2:
+        st.markdown(
+            '<div class="feature-card"><h3>🩺 Diabetes Risk Prediction</h3>'
+            '<p>Use your existing trained ANN model.</p></div>',
+            unsafe_allow_html=True
         )
-        st.info(
-            "🧮 **BMI Calculator**\n\n"
-            "Calculate BMI using height and weight."
+        st.markdown(
+            '<div class="feature-card"><h3>📊 Health Reports</h3>'
+            '<p>Download PDF and Excel summaries.</p></div>',
+            unsafe_allow_html=True
         )
 
-    st.warning(T("disclaimer"))
+    if model_error:
+        st.warning("Diabetes model could not be loaded: " + model_error)
+
+    st.info(T("disclaimer"))
 
 
-# ---------------- DIABETES PREDICTION ----------------
+# --------------------------------------------------
+# 8. DIABETES RISK PREDICTION
+# --------------------------------------------------
 
 elif page == T("prediction"):
 
-    st.title("🔍 " + T("prediction"))
-    st.write(T("enter_data"))
+    st.title(T("prediction"))
+    st.info(
+        "This prediction uses your existing diabetes model. "
+        "It does not detect other diseases."
+    )
 
-    with st.form("health_prediction_form"):
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            pregnancies = st.number_input(
-                T("pregnancies"), 0, 20, 1
-            )
-            glucose = st.number_input(
-                T("glucose"), 0, 300, 120
-            )
-            blood_pressure = st.number_input(
-                T("bp"), 0, 200, 70
-            )
-            skin_thickness = st.number_input(
-                T("skin"), 0, 100, 20
-            )
-
-        with col2:
-            insulin = st.number_input(
-                T("insulin"), 0, 900, 79
-            )
-            bmi = st.number_input(
-                T("bmi_label"), 0.0, 100.0, 25.0
-            )
-            dpf = st.number_input(
-                T("dpf"), 0.0, 3.0, 0.5
-            )
-            age = st.number_input(
-                T("age"), 1, 120, 30
-            )
-
-        submitted = st.form_submit_button(
-            T("analyze"),
-            use_container_width=True
+    if model is None:
+        st.error(
+            "Model files could not be loaded. Check that all three "
+            "model files are in the same GitHub folder as app.py."
         )
+        st.code(model_error or "Unknown model loading error")
 
-    if submitted:
+    else:
+        with st.form("diabetes_form"):
 
-        input_values = {
-            "Pregnancies": pregnancies,
-            "Glucose": glucose,
-            "BloodPressure": blood_pressure,
-            "SkinThickness": skin_thickness,
-            "Insulin": insulin,
-            "BMI": bmi,
-            "DiabetesPedigreeFunction": dpf,
-            "Age": age
-        }
+            st.subheader("🧍 Enter Health Details")
 
-        input_data = pd.DataFrame(
-            [[input_values[name] for name in features]],
-            columns=features
-        )
+            c1, c2 = st.columns(2)
 
-        try:
-            scaled_data = scaler.transform(input_data)
+            with c1:
+                pregnancies = st.number_input(
+                    "Pregnancies",
+                    min_value=0,
+                    max_value=20,
+                    value=0
+                )
+                glucose = st.number_input(
+                    "Glucose (mg/dL)",
+                    min_value=0.0,
+                    max_value=500.0,
+                    value=120.0
+                )
+                bp = st.number_input(
+                    "Blood Pressure (mm Hg)",
+                    min_value=0.0,
+                    max_value=250.0,
+                    value=70.0
+                )
+                skin = st.number_input(
+                    "Skin Thickness (mm)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=20.0
+                )
 
-            probability = float(
-                model.predict(scaled_data, verbose=0)[0][0]
+            with c2:
+                insulin = st.number_input(
+                    "Insulin (mu U/ml)",
+                    min_value=0.0,
+                    max_value=1000.0,
+                    value=80.0
+                )
+                bmi = st.number_input(
+                    "BMI",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=25.0
+                )
+                dpf = st.number_input(
+                    "Diabetes Pedigree Function",
+                    min_value=0.0,
+                    max_value=3.0,
+                    value=0.5
+                )
+                age = st.number_input(
+                    "Age",
+                    min_value=1,
+                    max_value=120,
+                    value=25
+                )
+
+            submitted = st.form_submit_button(
+                "🔍 " + T("predict"),
+                use_container_width=True
             )
 
-            prediction = probability >= 0.5
+        if submitted:
+            input_values = {
+                "Pregnancies": pregnancies,
+                "Glucose": glucose,
+                "BloodPressure": bp,
+                "SkinThickness": skin,
+                "Insulin": insulin,
+                "BMI": bmi,
+                "DiabetesPedigreeFunction": dpf,
+                "Age": age
+            }
 
-            st.divider()
-            st.subheader(T("result"))
+            try:
+                if set(feature_names) != set(input_values.keys()):
+                    raise ValueError(
+                        "The saved feature names do not match the "
+                        "expected diabetes model inputs."
+                    )
 
-            if prediction:
-                st.error(T("higher"))
-                result_text = "Higher predicted risk"
-            else:
-                st.success(T("lower"))
-                result_text = "Lower predicted risk"
+                input_df = pd.DataFrame(
+                    [[input_values[name] for name in feature_names]],
+                    columns=feature_names
+                )
 
-            st.metric(
-                T("score"),
-                f"{probability * 100:.2f}%"
-            )
+                scaled_input = scaler.transform(input_df)
+                probability = float(
+                    model.predict(scaled_input, verbose=0)[0][0]
+                )
 
-            st.progress(
-                min(max(probability, 0.0), 1.0)
-            )
+                result = (
+                    "Higher predicted risk"
+                    if probability >= 0.5
+                    else "Lower predicted risk"
+                )
 
-            st.caption(
-                "This is the model's output score, not a clinically "
-                "validated personal probability."
-            )
+                score = round(probability * 100, 2)
 
-            st.session_state.history.append({
-                "Date": datetime.now().strftime("%d-%m-%Y %H:%M"),
-                "Result": result_text,
-                "Score": round(probability * 100, 2)
-            })
+                st.session_state.last_prediction = {
+                    "result": result,
+                    "score": score,
+                    "age": age,
+                    "bmi": bmi
+                }
 
-            st.warning(T("disclaimer"))
+                record = {
+                    "date": datetime.now().strftime("%d-%m-%Y %H:%M"),
+                    "result": result,
+                    "score": score,
+                    "age": age,
+                    "bmi": bmi
+                }
 
-        except Exception as error:
-            st.error("Prediction failed.")
-            st.code(str(error))
+                st.session_state.history.append(record)
+
+                st.subheader("📊 " + T("result"))
+
+                if probability >= 0.5:
+                    st.warning("⚠️ " + T("high"))
+                else:
+                    st.success("✅ " + T("low"))
+
+                st.metric("Model score", f"{score}%")
+                st.progress(min(max(probability, 0.0), 1.0))
+
+                st.caption(
+                    "This is the model's estimated probability, not "
+                    "your confirmed chance of having diabetes."
+                )
+
+                st.info(
+                    "Please discuss your result with a qualified "
+                    "healthcare professional. A blood test and clinical "
+                    "assessment are needed for diagnosis."
+                )
+
+            except Exception as error:
+                st.error("Prediction error: " + str(error))
 
 
-# ---------------- HEALTH ASSISTANT ----------------
+# --------------------------------------------------
+# 9. GEMINI AI HEALTH ASSISTANT
+# --------------------------------------------------
 
 elif page == T("assistant"):
 
-    st.title("💬 " + T("assistant"))
+    st.title(T("assistant"))
+    st.caption("Powered by Google Gemini | Tamil + English")
 
-    st.caption(
-        "Educational rule-based assistant | "
-        "கல்வி நோக்கத்திற்கான உதவியாளர்"
+    st.info(
+        "Ask about general health, diseases, symptoms, nutrition, "
+        "fitness and prevention. This assistant cannot diagnose diseases."
     )
 
-    for message in st.session_state.chat:
+    for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
-            st.write(message["content"])
+            st.markdown(message["content"])
 
     question = st.chat_input(T("ask"))
 
     if question:
-
-        st.session_state.chat.append({
+        st.session_state.chat_history.append({
             "role": "user",
             "content": question
         })
 
-        q = question.lower()
-        tamil = st.session_state.language == "தமிழ்"
+        with st.chat_message("user"):
+            st.markdown(question)
 
-        if any(word in q for word in [
-            "symptom", "symptoms", "அறிகுறி", "அறிகுறிகள்"
-        ]):
-            answer = (
-                "நீரிழிவு நோயின் பொதுவான அறிகுறிகளில் அதிக தாகம், "
-                "அடிக்கடி சிறுநீர் கழித்தல், சோர்வு மற்றும் மங்கலான பார்வை "
-                "ஆகியவை அடங்கும். மருத்துவரிடம் பரிசோதனை பெறுங்கள்."
-                if tamil else
-                "Common symptoms can include increased thirst, frequent "
-                "urination, tiredness and blurred vision. Consult a healthcare "
-                "professional for appropriate testing."
-            )
+        with st.chat_message("assistant"):
+            with st.spinner("🤖 Thinking..."):
+                try:
+                    answer = ask_gemini(question)
+                except Exception as error:
+                    answer = (
+                        "Gemini request failed. Please check your API key "
+                        "and try again.\n\nError: " + str(error)
+                    )
 
-        elif any(word in q for word in [
-            "food", "diet", "eat", "உணவு", "சாப்பாடு"
-        ]):
-            answer = (
-                "காய்கறிகள், முழு தானியங்கள், பருப்பு வகைகள் மற்றும் "
-                "சரியான புரத உணவுகளை உள்ளடக்கிய சமநிலையான உணவு உதவியாக "
-                "இருக்கலாம். தனிப்பட்ட உணவுத் திட்டத்திற்கு உணவியல் நிபுணரை அணுகவும்."
-                if tamil else
-                "A balanced eating pattern may include vegetables, whole "
-                "grains, pulses and suitable protein sources. Consult a "
-                "registered dietitian for personal dietary advice."
-            )
+                st.markdown(answer)
 
-        elif any(word in q for word in [
-            "exercise", "walking", "workout", "நடை", "உடற்பயிற்சி"
-        ]):
-            answer = (
-                "நடைப்பயிற்சி, சைக்கிள் ஓட்டுதல் போன்ற உடல் செயல்பாடுகள் "
-                "பொது உடல்நலத்திற்கு உதவலாம். உங்கள் உடல்நிலைக்கு ஏற்ற "
-                "பயிற்சியைத் தேர்ந்தெடுக்கவும்."
-                if tamil else
-                "Walking, cycling and other suitable physical activities "
-                "can support general health. Choose activity appropriate "
-                "for your health and fitness level."
-            )
-
-        elif any(word in q for word in [
-            "insulin", "இன்சுலின்"
-        ]):
-            answer = (
-                "இன்சுலின் என்பது இரத்தத்தில் உள்ள குளுக்கோஸ் செல்களுக்குள் "
-                "செல்ல உதவும் ஒரு ஹார்மோன் ஆகும்."
-                if tamil else
-                "Insulin is a hormone that helps glucose move from the blood "
-                "into body cells."
-            )
-
-        elif any(word in q for word in [
-            "bmi", "உடல் நிறை"
-        ]):
-            answer = (
-                "BMI என்பது உடல் எடை மற்றும் உயரத்தைப் பயன்படுத்தி "
-                "கணக்கிடப்படும் ஒரு அளவீடு. இது முழுமையான உடல்நல மதிப்பீடு அல்ல."
-                if tamil else
-                "BMI stands for Body Mass Index. It uses weight and height "
-                "as a screening measure, not a complete health assessment."
-            )
-
-        elif any(word in q for word in [
-            "hello", "hi", "hey", "வணக்கம்"
-        ]):
-            answer = (
-                "வணக்கம்! நீரிழிவு, உணவு, உடற்பயிற்சி, BMI பற்றி கேளுங்கள்."
-                if tamil else
-                "Hello! Ask me about diabetes, food, exercise, BMI or insulin."
-            )
-
-        else:
-            answer = (
-                "நீரிழிவு, அறிகுறிகள், உணவு, உடற்பயிற்சி, BMI மற்றும் "
-                "இன்சுலின் பற்றி பொதுவான தகவல்களை வழங்க முடியும். "
-                "தனிப்பட்ட மருத்துவ ஆலோசனைக்கு மருத்துவரை அணுகவும்."
-                if tamil else
-                "I can provide general educational information about diabetes, "
-                "symptoms, food, exercise, BMI and insulin. "
-                "Consult a healthcare professional for personal medical advice."
-            )
-
-        st.session_state.chat.append({
+        st.session_state.chat_history.append({
             "role": "assistant",
             "content": answer
         })
 
+    if st.button("🗑️ " + T("clear")):
+        st.session_state.chat_history = []
         st.rerun()
 
-    if st.button(T("clear")):
-        st.session_state.chat = []
-        st.rerun()
 
+# --------------------------------------------------
+# 10. HEALTHY FOOD GUIDE
+# --------------------------------------------------
 
-# ---------------- BMI CALCULATOR ----------------
+elif page == T("food"):
 
-elif page == T("bmi"):
+    st.title(T("food"))
+    st.write("🥑 Explore balanced food choices and everyday nutrition.")
 
-    st.title("🧮 " + T("bmi"))
+    st.subheader("🍽️ Balanced Indian Meal Ideas")
 
-    weight = st.number_input(
-        T("bmi_weight"),
-        min_value=1.0,
-        max_value=300.0,
-        value=65.0
+    meals = {
+        "🌅 Breakfast": [
+            "Idli with sambar",
+            "Vegetable dosa",
+            "Oats with nuts",
+            "Boiled eggs with whole-grain toast"
+        ],
+        "☀️ Lunch": [
+            "Rice in a suitable portion",
+            "Vegetable poriyal",
+            "Sambar or dal",
+            "Curd and salad"
+        ],
+        "🌙 Dinner": [
+            "Chapati with vegetable kurma",
+            "Vegetable soup with protein source",
+            "Millet dosa with sambar"
+        ],
+        "🍎 Snacks": [
+            "Whole fruit",
+            "Roasted chana",
+            "Unsalted nuts",
+            "Buttermilk without added sugar"
+        ]
+    }
+
+    for meal, items in meals.items():
+        with st.expander(meal, expanded=True):
+            for item in items:
+                st.write("• " + item)
+
+    st.subheader("💡 Healthy Eating Tips")
+    st.markdown("""
+    - 🥦 Include different vegetables and fruits.
+    - 🫘 Add protein sources such as dal, beans, eggs or fish.
+    - 🌾 Prefer whole grains and fibre-rich foods.
+    - 💧 Drink water regularly.
+    - 🍬 Limit sugary drinks and highly processed snacks.
+    - ⚖️ Choose portions that suit your individual needs.
+    """)
+
+    st.warning(
+        "People with diabetes, kidney disease, food allergies or other "
+        "medical conditions may need individual diet advice from a "
+        "registered dietitian or doctor."
     )
 
-    height = st.number_input(
-        T("bmi_height"),
-        min_value=50.0,
-        max_value=250.0,
-        value=170.0
+
+# --------------------------------------------------
+# 11. EXERCISE & FITNESS
+# --------------------------------------------------
+
+elif page == T("exercise"):
+
+    st.title(T("exercise"))
+
+    st.subheader("🚶 Beginner Weekly Activity Ideas")
+
+    workout = pd.DataFrame({
+        "Day": [
+            "Monday", "Tuesday", "Wednesday", "Thursday",
+            "Friday", "Saturday", "Sunday"
+        ],
+        "Activity": [
+            "Brisk walking",
+            "Gentle bodyweight exercises",
+            "Walking + stretching",
+            "Yoga or mobility",
+            "Brisk walking",
+            "Light strength exercises",
+            "Rest or gentle walk"
+        ],
+        "Suggested duration": [
+            "20 minutes", "15 minutes", "20 minutes", "15 minutes",
+            "25 minutes", "15 minutes", "As comfortable"
+        ]
+    })
+
+    st.dataframe(workout, use_container_width=True, hide_index=True)
+
+    st.subheader("🏋️ Simple Beginner Exercises")
+
+    exercises = [
+        ("🚶 Walking", "Start at a comfortable pace."),
+        ("🪑 Chair Squats", "Use a stable chair for support."),
+        ("🧱 Wall Push-ups", "Keep your body straight and move gently."),
+        ("🧘 Stretching", "Avoid bouncing or forcing a stretch."),
+        ("🧍 Standing March", "March slowly while holding support if needed.")
+    ]
+
+    for name, description in exercises:
+        st.markdown(f"**{name}** — {description}")
+
+    st.info(
+        "Start slowly and increase activity gradually. Stop if you feel "
+        "chest pain, faintness or unusual breathlessness. Ask a healthcare "
+        "professional before starting exercise if you have a medical "
+        "condition or exercise-related symptoms."
     )
 
-    if st.button(T("calculate")):
 
-        height_m = height / 100
-        bmi_value = weight / (height_m ** 2)
+# --------------------------------------------------
+# 12. HEALTH LEARNING CENTER
+# --------------------------------------------------
 
-        st.metric(
-            T("your_bmi"),
-            f"{bmi_value:.1f}"
+elif page == T("learning"):
+
+    st.title(T("learning"))
+
+    topics = {
+        "🩸 Diabetes": (
+            "Diabetes is a condition involving high blood glucose. "
+            "There are different types, including type 1, type 2 and "
+            "gestational diabetes. Diagnosis requires appropriate "
+            "laboratory tests."
+        ),
+        "❤️ Blood Pressure": (
+            "Blood pressure measures the force of blood against artery "
+            "walls. Persistently high blood pressure can increase health "
+            "risks. Proper measurement and clinical assessment matter."
+        ),
+        "🫀 Heart Health": (
+            "Heart health can be supported through regular physical "
+            "activity, balanced food choices, avoiding tobacco and "
+            "routine health checks."
+        ),
+        "🫁 Respiratory Health": (
+            "Respiratory conditions affect breathing and the lungs. "
+            "Severe difficulty breathing requires urgent medical help."
+        ),
+        "🧠 Mental Wellbeing": (
+            "Sleep, social connection, physical activity and seeking "
+            "professional support when needed can support mental wellbeing."
+        ),
+        "🫘 Kidney Health": (
+            "Kidneys help filter waste and regulate fluid balance. "
+            "Blood and urine tests may be used by clinicians to assess "
+            "kidney function."
+        )
+    }
+
+    for topic, description in topics.items():
+        with st.expander(topic):
+            st.write(description)
+
+    st.warning(
+        "This learning center provides general education, not diagnosis "
+        "or treatment advice."
+    )
+
+
+# --------------------------------------------------
+# 13. REPORTS & DOWNLOADS
+# --------------------------------------------------
+
+elif page == T("reports"):
+
+    st.title(T("reports"))
+    st.write(T("report"))
+
+    if st.session_state.last_prediction:
+        last = st.session_state.last_prediction
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Latest result", last["result"])
+        c2.metric("Model score", f"{last['score']}%")
+        c3.metric("BMI", last["bmi"])
+
+    else:
+        st.info(
+            "No prediction yet. You can still download an empty report. "
+            "Run a prediction to include your latest result."
         )
 
-        if bmi_value < 18.5:
-            category = "Underweight / குறைந்த எடை"
-        elif bmi_value < 25:
-            category = "Normal range / இயல்பான வரம்பு"
-        elif bmi_value < 30:
-            category = "Overweight / அதிக எடை"
-        else:
-            category = "Obesity range / உடல் பருமன் வரம்பு"
+    st.subheader("📄 PDF Report")
 
-        st.info(category)
+    pdf_data = create_pdf_report()
 
-        st.caption(
-            "BMI is a screening measure, not a diagnosis. "
-            "Interpretation may vary by age and individual circumstances."
-        )
+    st.download_button(
+        label="⬇️ Download PDF Report",
+        data=pdf_data,
+        file_name="HealthPredict_AI_Report.pdf",
+        mime="application/pdf",
+        use_container_width=True
+    )
 
+    st.subheader("📊 Excel Report")
 
-# ---------------- PREDICTION HISTORY ----------------
+    excel_data = create_excel_report()
 
-elif page == T("history"):
-
-    st.title("📊 " + T("history"))
+    st.download_button(
+        label="⬇️ Download Excel Report",
+        data=excel_data,
+        file_name="HealthPredict_AI_Report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
     if st.session_state.history:
-
-        history_df = pd.DataFrame(st.session_state.history)
-
-        st.metric(T("total"), len(history_df))
-
+        st.subheader("📈 Prediction History")
         st.dataframe(
-            history_df,
+            pd.DataFrame(st.session_state.history),
             use_container_width=True,
             hide_index=True
         )
 
-        st.subheader("Prediction Score Analytics")
 
-        chart_data = history_df[["Score"]].copy()
-        chart_data.index = range(1, len(chart_data) + 1)
-
-        st.line_chart(chart_data)
-
-        csv_data = history_df.to_csv(
-            index=False
-        ).encode("utf-8")
-
-        st.download_button(
-            T("download"),
-            data=csv_data,
-            file_name="healthpredict_history.csv",
-            mime="text/csv"
-        )
-
-    else:
-        st.info(T("history_empty"))
-
-
-# ---------------- HEALTH LEARNING CENTER ----------------
-
-elif page == T("learning"):
-
-    st.title("📚 " + T("learning_title"))
-
-    if st.session_state.language == "தமிழ்":
-
-        with st.expander("🩺 நீரிழிவு என்றால் என்ன?"):
-            st.write(
-                "இரத்தத்தில் குளுக்கோஸ் அளவு அதிகமாக இருக்கும் நிலையே "
-                "நீரிழிவு நோய். இதைப் பரிசோதனைகள் மூலம் மருத்துவர் மதிப்பிடுவார்."
-            )
-
-        with st.expander("🥗 ஆரோக்கியமான உணவு"):
-            st.write(
-                "காய்கறிகள், முழு தானியங்கள், பருப்பு வகைகள் மற்றும் "
-                "சமநிலையான உணவுப் பழக்கங்கள் பொது உடல்நலத்திற்கு உதவும்."
-            )
-
-        with st.expander("🚶 உடற்பயிற்சியின் முக்கியத்துவம்"):
-            st.write(
-                "தொடர்ச்சியான உடல் செயல்பாடு இதயம் மற்றும் ஒட்டுமொத்த "
-                "உடல்நலத்திற்கு உதவக்கூடும்."
-            )
-
-        with st.expander("🧪 உடல்நலப் பரிசோதனைகள்"):
-            st.write(
-                "இரத்த குளுக்கோஸ் மற்றும் HbA1c போன்ற பரிசோதனைகள் "
-                "நீரிழிவை மதிப்பிட உதவும். மருத்துவரின் ஆலோசனையைப் பெறுங்கள்."
-            )
-
-    else:
-
-        with st.expander("🩺 What is Diabetes?"):
-            st.write(
-                "Diabetes is a condition involving elevated blood glucose. "
-                "Healthcare professionals use appropriate tests to assess it."
-            )
-
-        with st.expander("🥗 Healthy Eating"):
-            st.write(
-                "Vegetables, whole grains, pulses and balanced food habits "
-                "can support general health."
-            )
-
-        with st.expander("🚶 Importance of Exercise"):
-            st.write(
-                "Regular physical activity can support cardiovascular "
-                "health and overall wellbeing."
-            )
-
-        with st.expander("🧪 Health Tests"):
-            st.write(
-                "Blood glucose and HbA1c tests can help healthcare "
-                "professionals assess diabetes."
-            )
-
-    st.warning(T("disclaimer"))
-
-
-# ---------------- ABOUT ----------------
+# --------------------------------------------------
+# 14. ABOUT
+# --------------------------------------------------
 
 elif page == T("about"):
 
-    st.title("ℹ️ " + T("about"))
-
-    st.write(T("about_text"))
-
-    st.subheader("Technology Stack")
+    st.title("ℹ️ About HealthPredict AI 4.0")
 
     st.markdown("""
+    **HealthPredict AI** is an educational health and wellness project.
+
+    ### Main modules
+    - 🩺 Diabetes risk estimation using an existing ANN model
+    - 🤖 Gemini-powered health education assistant
+    - 🥗 Healthy food and nutrition information
+    - 🏃 Beginner exercise and fitness guidance
+    - 📚 General health learning center
+    - 📊 PDF and Excel report downloads
+    - 🌐 Tamil and English interface
+    - 🎨 Multiple color themes
+
+    ### Technology
     - Python
-    - TensorFlow / Keras
-    - Artificial Neural Network
-    - Scikit-learn
-    - Pandas and NumPy
     - Streamlit
+    - TensorFlow / Keras
+    - Scikit-learn
+    - Google Gemini API
+    - Pandas and NumPy
+    - ReportLab and OpenPyXL
     """)
 
-    st.subheader("Dataset")
-    st.write("Pima Indians Diabetes Dataset")
+    st.error(
+        "MEDICAL DISCLAIMER: HealthPredict AI is not a hospital, doctor "
+        "or diagnostic system. Its diabetes model estimates risk only. "
+        "It does not diagnose diabetes or detect all diseases. Do not "
+        "use its outputs to start, stop or change medication. Consult "
+        "a qualified healthcare professional for medical decisions. "
+        "For emergencies, contact local emergency services."
+    )
 
-    st.subheader("Developer")
-    st.write("Harish S | AI & Data Science")
 
-    st.warning(T("disclaimer"))
-
-# ---------------- FOOTER ----------------
+# --------------------------------------------------
+# 15. FOOTER
+# --------------------------------------------------
 
 st.divider()
 
 st.caption(
-    "HealthPredict AI 3.0 | Educational AI/ML Project | "
-    "Not a medical diagnostic application"
+    "🩺 HealthPredict AI 4.0 | Built for health education and wellness | "
+    "Not a substitute for professional medical care."
 )
