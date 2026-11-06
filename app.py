@@ -1,30 +1,38 @@
+
 import os
 import io
-import pickle
-from datetime import datetime
-
+import joblib
 import streamlit as st
 import pandas as pd
 import numpy as np
 import tensorflow as tf
 
-from google import genai
-from google.genai import types
-
+from datetime import datetime
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
+# Gemini import is optional so the whole app can still open
+# even if the Gemini SDK has not installed correctly.
+try:
+    from google import genai
+    from google.genai import types
+    GEMINI_AVAILABLE = True
+    GEMINI_IMPORT_ERROR = None
+except Exception as e:
+    genai = None
+    types = None
+    GEMINI_AVAILABLE = False
+    GEMINI_IMPORT_ERROR = str(e)
 
-# --------------------------------------------------
+
+# =========================================================
 # 1. APP CONFIGURATION
-# --------------------------------------------------
+# =========================================================
 
 st.set_page_config(
     page_title="HealthPredict AI 4.0",
@@ -37,98 +45,48 @@ MODEL_PATH = "health_predict_model.keras"
 SCALER_PATH = "health_scaler.pkl"
 FEATURES_PATH = "health_features.pkl"
 
-MODEL_NAME = "gemini-3.8-flash"
+GEMINI_MODEL = "gemini-3.8-flash"
 
-FEATURE_LABELS = {
-    "Pregnancies": "Pregnancies",
-    "Glucose": "Glucose (mg/dL)",
-    "BloodPressure": "Blood Pressure (mm Hg)",
-    "SkinThickness": "Skin Thickness (mm)",
-    "Insulin": "Insulin (mu U/ml)",
-    "BMI": "BMI",
-    "DiabetesPedigreeFunction": "Diabetes Pedigree Function",
-    "Age": "Age"
-}
-
-TEXT = {
-    "English": {
-        "dashboard": "🏠 Dashboard",
-        "prediction": "🩺 Diabetes Risk Prediction",
-        "assistant": "🤖 AI Health Assistant",
-        "food": "🥗 Healthy Food Guide",
-        "exercise": "🏃 Exercise & Fitness",
-        "learning": "📚 Health Learning Center",
-        "reports": "📊 Reports & Downloads",
-        "about": "ℹ️ About",
-        "welcome": "Your AI-powered health and wellness companion",
-        "language": "Language",
-        "theme": "Theme",
-        "ask": "Ask a health-related question...",
-        "send": "Send message",
-        "clear": "Clear chat",
-        "bmi": "BMI Calculator",
-        "calculate": "Calculate BMI",
-        "name": "Name (optional)",
-        "age": "Age",
-        "height": "Height (cm)",
-        "weight": "Weight (kg)",
-        "predict": "Predict diabetes risk",
-        "result": "Prediction result",
-        "low": "Lower predicted risk",
-        "high": "Higher predicted risk",
-        "report": "Download your health report",
-        "disclaimer": "Educational information only. Not a medical diagnosis."
-    },
-    "தமிழ்": {
-        "dashboard": "🏠 முகப்பு",
-        "prediction": "🩺 நீரிழிவு அபாய கணிப்பு",
-        "assistant": "🤖 AI சுகாதார உதவியாளர்",
-        "food": "🥗 ஆரோக்கிய உணவு வழிகாட்டி",
-        "exercise": "🏃 உடற்பயிற்சி & உடல்நலம்",
-        "learning": "📚 சுகாதார அறிவு மையம்",
-        "reports": "📊 அறிக்கைகள் & பதிவிறக்கம்",
-        "about": "ℹ️ எங்களைப் பற்றி",
-        "welcome": "உங்கள் AI சுகாதார மற்றும் நலவாழ்வு உதவியாளர்",
-        "language": "மொழி",
-        "theme": "நிறத் தீம்",
-        "ask": "உடல்நலம் தொடர்பான கேள்வியைக் கேளுங்கள்...",
-        "send": "செய்தி அனுப்பு",
-        "clear": "உரையாடலை அழி",
-        "bmi": "BMI கணக்கீடு",
-        "calculate": "BMI கணக்கிடு",
-        "name": "பெயர் (விருப்பம்)",
-        "age": "வயது",
-        "height": "உயரம் (செ.மீ.)",
-        "weight": "எடை (கிலோ)",
-        "predict": "நீரிழிவு அபாயத்தைக் கணிக்கவும்",
-        "result": "கணிப்பு முடிவு",
-        "low": "குறைவான கணிக்கப்பட்ட அபாயம்",
-        "high": "அதிகமான கணிக்கப்பட்ட அபாயம்",
-        "report": "சுகாதார அறிக்கையைப் பதிவிறக்கவும்",
-        "disclaimer": "இது கல்வி நோக்கத்திற்கான தகவல் மட்டுமே. மருத்துவ நோயறிதல் அல்ல."
-    }
-}
+EXPECTED_FEATURES = [
+    "Pregnancies",
+    "Glucose",
+    "BloodPressure",
+    "SkinThickness",
+    "Insulin",
+    "BMI",
+    "DiabetesPedigreeFunction",
+    "Age"
+]
 
 
-def T(key):
-    return TEXT[language].get(key, key)
+# =========================================================
+# 2. SESSION STATE
+# =========================================================
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+if "last_prediction" not in st.session_state:
+    st.session_state.last_prediction = None
 
 
-# --------------------------------------------------
-# 2. SIDEBAR SETTINGS
-# --------------------------------------------------
+# =========================================================
+# 3. SIDEBAR SETTINGS
+# =========================================================
 
 st.sidebar.markdown("# 🩺 HealthPredict AI")
 st.sidebar.caption("Version 4.0 | Smart Health & Wellness")
 
 language = st.sidebar.selectbox(
     "🌐 Language / மொழி",
-    ["English", "தமிழ்"],
-    index=0
+    ["English", "தமிழ்"]
 )
 
 theme = st.sidebar.selectbox(
-    "🎨 Theme",
+    "🎨 Choose Theme",
     [
         "Neon Teal + Purple",
         "Royal Purple + Black",
@@ -136,6 +94,23 @@ theme = st.sidebar.selectbox(
         "Clean Light"
     ]
 )
+
+TAMIL = language == "தமிழ்"
+
+TEXT = {
+    "dashboard": "🏠 முகப்பு" if TAMIL else "🏠 Dashboard",
+    "prediction": "🩺 நீரிழிவு அபாய கணிப்பு" if TAMIL else "🩺 Diabetes Risk Prediction",
+    "assistant": "🤖 AI சுகாதார உதவியாளர்" if TAMIL else "🤖 AI Health Assistant",
+    "food": "🥗 ஆரோக்கிய உணவு" if TAMIL else "🥗 Healthy Food Guide",
+    "exercise": "🏃 உடற்பயிற்சி" if TAMIL else "🏃 Exercise & Fitness",
+    "learning": "📚 சுகாதார அறிவு" if TAMIL else "📚 Health Learning Center",
+    "reports": "📊 அறிக்கைகள்" if TAMIL else "📊 Reports & Downloads",
+    "about": "ℹ️ எங்களைப் பற்றி" if TAMIL else "ℹ️ About",
+    "ask": "உடல்நலம் தொடர்பான கேள்வியைக் கேளுங்கள்..." if TAMIL else "Ask a health-related question...",
+    "predict": "கணிக்கவும்" if TAMIL else "Predict diabetes risk",
+    "clear": "உரையாடலை அழி" if TAMIL else "Clear chat",
+    "disclaimer": "கல்வி நோக்கத்திற்கான தகவல் மட்டுமே. மருத்துவ நோயறிதல் அல்ல." if TAMIL else "Educational information only. Not a medical diagnosis."
+}
 
 themes = {
     "Neon Teal + Purple": {
@@ -168,54 +143,49 @@ themes = {
     }
 }
 
-colorset = themes[theme]
+C = themes[theme]
 
 st.markdown(
     f"""
     <style>
     .stApp {{
-        background: {colorset['bg']};
-        color: {colorset['text']};
+        background-color: {C['bg']};
+        color: {C['text']};
     }}
     [data-testid="stSidebar"] {{
-        background: {colorset['card']};
+        background-color: {C['card']};
     }}
     .hero {{
         padding: 28px;
         border-radius: 20px;
-        background: linear-gradient(
-            120deg,
-            {colorset['card']},
-            {colorset['bg']}
-        );
-        border: 1px solid {colorset['primary']};
+        background: linear-gradient(120deg, {C['card']}, {C['bg']});
+        border: 1px solid {C['primary']};
         margin-bottom: 20px;
     }}
     .hero h1 {{
-        color: {colorset['primary']};
-        margin-bottom: 5px;
+        color: {C['primary']};
     }}
     .feature-card {{
         padding: 20px;
         border-radius: 16px;
-        background: {colorset['card']};
-        border: 1px solid {colorset['secondary']};
+        background: {C['card']};
+        border: 1px solid {C['secondary']};
         min-height: 130px;
         margin-bottom: 12px;
     }}
     .feature-card h3 {{
-        color: {colorset['primary']};
+        color: {C['primary']};
     }}
     div.stButton > button {{
         border-radius: 12px;
-        border: 1px solid {colorset['primary']};
+        border: 1px solid {C['primary']};
         font-weight: 600;
     }}
     div[data-testid="stMetric"] {{
-        background: {colorset['card']};
-        padding: 15px;
+        background: {C['card']};
+        padding: 14px;
         border-radius: 14px;
-        border: 1px solid {colorset['primary']};
+        border: 1px solid {C['primary']};
     }}
     </style>
     """,
@@ -223,30 +193,49 @@ st.markdown(
 )
 
 
-# --------------------------------------------------
-# 3. LOAD EXISTING DIABETES MODEL FILES
-# --------------------------------------------------
+# =========================================================
+# 4. LOAD EXISTING MODEL FILES
+# =========================================================
 
 @st.cache_resource
 def load_diabetes_files():
-    required = [MODEL_PATH, SCALER_PATH, FEATURES_PATH]
 
-    missing = [file for file in required if not os.path.exists(file)]
+    required_files = [
+        MODEL_PATH,
+        SCALER_PATH,
+        FEATURES_PATH
+    ]
+
+    missing = [
+        name for name in required_files
+        if not os.path.isfile(name)
+    ]
 
     if missing:
         raise FileNotFoundError(
-            "Missing model files: " + ", ".join(missing)
+            "Missing files: " + ", ".join(missing)
         )
 
-    model = tf.keras.models.load_model(MODEL_PATH)
+    # Load the existing trained ANN model.
+    loaded_model = tf.keras.models.load_model(MODEL_PATH)
 
-    with open(SCALER_PATH, "rb") as file:
-        scaler = pickle.load(file)
+    # Load the existing scaler and feature list.
+    # joblib can load objects saved using joblib.dump.
+    loaded_scaler = joblib.load(SCALER_PATH)
+    loaded_features = joblib.load(FEATURES_PATH)
 
-    with open(FEATURES_PATH, "rb") as file:
-        feature_names = pickle.load(file)
+    if isinstance(loaded_features, np.ndarray):
+        loaded_features = loaded_features.tolist()
 
-    return model, scaler, list(feature_names)
+    loaded_features = list(loaded_features)
+
+    if set(loaded_features) != set(EXPECTED_FEATURES):
+        raise ValueError(
+            "Feature names do not match the expected diabetes model inputs. "
+            f"Found: {loaded_features}"
+        )
+
+    return loaded_model, loaded_scaler, loaded_features
 
 
 model = None
@@ -256,123 +245,83 @@ model_error = None
 
 try:
     model, scaler, feature_names = load_diabetes_files()
-except Exception as error:
-    model_error = str(error)
+except Exception as e:
+    model_error = str(e)
 
 
-# --------------------------------------------------
-# 4. SESSION STATE
-# --------------------------------------------------
-
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-if "last_prediction" not in st.session_state:
-    st.session_state.last_prediction = None
-
-
-# --------------------------------------------------
-# 5. NAVIGATION
-# --------------------------------------------------
-
-pages = [
-    T("dashboard"),
-    T("prediction"),
-    T("assistant"),
-    T("food"),
-    T("exercise"),
-    T("learning"),
-    T("reports"),
-    T("about")
-]
-
-page = st.sidebar.radio("Navigation", pages)
-
-st.sidebar.divider()
-st.sidebar.caption("🔐 Your API key is stored in Streamlit Secrets.")
-st.sidebar.caption("⚠️ For educational use only.")
-
-
-# --------------------------------------------------
-# 6. HELPER FUNCTIONS
-# --------------------------------------------------
+# =========================================================
+# 5. HELPER FUNCTIONS
+# =========================================================
 
 def calculate_bmi(weight, height_cm):
     height_m = height_cm / 100
-    return weight / (height_m * height_m)
-
-
-def bmi_category(bmi):
-    if bmi < 18.5:
-        return "Underweight"
-    elif bmi < 25:
-        return "Normal range"
-    elif bmi < 30:
-        return "Overweight"
-    return "Obesity range"
+    if height_m <= 0:
+        return 0
+    return weight / (height_m ** 2)
 
 
 def get_gemini_client():
+
+    if not GEMINI_AVAILABLE:
+        raise RuntimeError(
+            "Gemini SDK import failed: " + str(GEMINI_IMPORT_ERROR)
+        )
+
     try:
         api_key = st.secrets.get("GOOGLE_API_KEY", "")
     except Exception:
         api_key = os.getenv("GOOGLE_API_KEY", "")
 
     if not api_key:
-        return None
+        raise RuntimeError(
+            "GOOGLE_API_KEY is missing. Add it in Streamlit Cloud → "
+            "Manage app → Settings → Secrets."
+        )
 
     return genai.Client(api_key=api_key)
 
 
 def ask_gemini(question):
+
     client = get_gemini_client()
 
-    if client is None:
-        return (
-            "Gemini API key is missing. Add GOOGLE_API_KEY "
-            "in Streamlit Cloud → App settings → Secrets."
-        )
-
     system_instruction = """
-    You are HealthPredict AI, a careful health education assistant.
+    You are HealthPredict AI, a health education assistant.
 
-    Rules:
-    1. Answer only health, wellness, nutrition, fitness and medical
-       education questions.
-    2. If asked about unrelated topics, politely explain that you
-       are designed for health-related questions.
-    3. Support Tamil and English. Reply in the language used by
-       the user.
-    4. Explain common symptoms and possible causes as general
-       information, never as a confirmed diagnosis.
-    5. Never claim to detect or diagnose every disease.
-    6. Never prescribe medicines, dosages or treatment changes.
-    7. Encourage users to consult a qualified healthcare professional.
-    8. For emergency warning signs such as severe chest pain,
-       difficulty breathing, stroke symptoms, unconsciousness or
-       severe bleeding, advise immediate emergency medical help.
-    9. Give practical, safe, evidence-informed general guidance.
-    10. Keep answers clear and easy to understand.
+    IMPORTANT RULES:
+    1. Answer only health, disease education, nutrition, fitness,
+       prevention and general wellness questions.
+    2. Politely refuse unrelated questions and explain that you are
+       a health-focused assistant.
+    3. Reply in the same language as the user: Tamil or English.
+    4. Explain symptoms as general information, not a diagnosis.
+    5. Never claim that you can detect or diagnose every disease.
+    6. Never prescribe medicines or dosages.
+    7. Never tell users to start, stop or change medication.
+    8. Encourage consultation with qualified healthcare professionals.
+    9. For chest pain, severe breathing difficulty, stroke symptoms,
+       unconsciousness or severe bleeding, advise immediate emergency
+       medical help.
+    10. Give clear, practical and safe educational information.
+    11. Do not claim that the diabetes prediction model detects other
+        diseases.
     """
 
-    previous_messages = ""
+    conversation = ""
 
     for item in st.session_state.chat_history[-8:]:
-        previous_messages += (
-            f"\n{item['role'].upper()}: {item['content']}\n"
+        conversation += (
+            "\n" + item["role"].upper() + ": " + item["content"]
         )
 
     prompt = (
-        previous_messages
+        conversation
         + "\nUSER: "
         + question
     )
 
     response = client.models.generate_content(
-        model=MODEL_NAME,
+        model=GEMINI_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
@@ -381,10 +330,20 @@ def ask_gemini(question):
         )
     )
 
-    return response.text or "Sorry, I could not generate a response."
+    answer = response.text
 
+    if not answer:
+        return "Sorry, no response was generated. Please try again."
+
+    return answer
+
+
+# =========================================================
+# 6. PDF REPORT GENERATOR
+# =========================================================
 
 def create_pdf_report():
+
     buffer = io.BytesIO()
 
     doc = SimpleDocTemplate(
@@ -397,6 +356,7 @@ def create_pdf_report():
     )
 
     styles = getSampleStyleSheet()
+
     title_style = ParagraphStyle(
         "ReportTitle",
         parent=styles["Title"],
@@ -417,15 +377,16 @@ def create_pdf_report():
     last = st.session_state.last_prediction
 
     if last:
-        report_data = [
+        data = [
             ["Item", "Value"],
             ["Diabetes risk result", last["result"]],
-            ["Model score", last["score"]],
-            ["Age", last["age"]],
-            ["BMI", last["bmi"]]
+            ["Model score", str(last["score"]) + "%"],
+            ["Age", str(last["age"])],
+            ["BMI", str(last["bmi"])]
         ]
 
-        table = Table(report_data, colWidths=[220, 220])
+        table = Table(data, colWidths=[220, 220])
+
         table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#087E8B")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -437,10 +398,7 @@ def create_pdf_report():
         story.append(table)
     else:
         story.append(
-            Paragraph(
-                "No diabetes prediction has been recorded in this session.",
-                styles["Normal"]
-            )
+            Paragraph("No prediction recorded yet.", styles["Normal"])
         )
 
     story.append(Spacer(1, 18))
@@ -452,10 +410,11 @@ def create_pdf_report():
         history_data.append([
             item["date"],
             item["result"],
-            item["score"]
+            str(item["score"]) + "%"
         ])
 
     history_table = Table(history_data, repeatRows=1)
+
     history_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#6655CC")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -465,6 +424,7 @@ def create_pdf_report():
 
     story.append(history_table)
     story.append(Spacer(1, 20))
+
     story.append(
         Paragraph(
             "IMPORTANT: This report is for educational purposes only. "
@@ -476,30 +436,42 @@ def create_pdf_report():
 
     doc.build(story)
     buffer.seek(0)
+
     return buffer.getvalue()
 
 
+# =========================================================
+# 7. EXCEL REPORT GENERATOR
+# =========================================================
+
 def create_excel_report():
+
     workbook = Workbook()
 
     summary = workbook.active
     summary.title = "Health Summary"
 
     summary.append(["HealthPredict AI - Health Summary"])
-    summary.append(["Generated", datetime.now().strftime("%d-%m-%Y %H:%M")])
+    summary.append([
+        "Generated",
+        datetime.now().strftime("%d-%m-%Y %H:%M")
+    ])
 
     last = st.session_state.last_prediction
 
     if last:
         summary.append(["Latest prediction", last["result"]])
-        summary.append(["Model score", last["score"]])
+        summary.append(["Model score", str(last["score"]) + "%"])
         summary.append(["Age", last["age"]])
         summary.append(["BMI", last["bmi"]])
     else:
         summary.append(["Latest prediction", "No prediction yet"])
 
     history_sheet = workbook.create_sheet("Prediction History")
-    history_sheet.append(["Date", "Result", "Score", "Age", "BMI"])
+
+    history_sheet.append([
+        "Date", "Result", "Score", "Age", "BMI"
+    ])
 
     for item in st.session_state.history:
         history_sheet.append([
@@ -511,7 +483,9 @@ def create_excel_report():
         ])
 
     for sheet in workbook.worksheets:
+
         sheet.freeze_panes = "A2"
+
         for cell in sheet[1]:
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill(
@@ -525,121 +499,157 @@ def create_excel_report():
             max_length = max(
                 len(str(cell.value or "")) for cell in column
             )
-            sheet.column_dimensions[column[0].column_letter].width = (
-                min(max_length + 4, 35)
-            )
+            sheet.column_dimensions[
+                column[0].column_letter
+            ].width = min(max_length + 4, 35)
 
     output = io.BytesIO()
     workbook.save(output)
     output.seek(0)
+
     return output.getvalue()
 
 
-# --------------------------------------------------
-# 7. DASHBOARD
-# --------------------------------------------------
+# =========================================================
+# 8. NAVIGATION
+# =========================================================
 
-if page == T("dashboard"):
+pages = [
+    TEXT["dashboard"],
+    TEXT["prediction"],
+    TEXT["assistant"],
+    TEXT["food"],
+    TEXT["exercise"],
+    TEXT["learning"],
+    TEXT["reports"],
+    TEXT["about"]
+]
+
+page = st.sidebar.radio("Navigation", pages)
+
+st.sidebar.divider()
+st.sidebar.caption("🔐 API key is stored in Streamlit Secrets.")
+st.sidebar.caption("⚠️ Educational use only.")
+
+
+# =========================================================
+# 9. DASHBOARD
+# =========================================================
+
+if page == TEXT["dashboard"]:
 
     st.markdown(
         f"""
         <div class="hero">
             <h1>🩺 HealthPredict AI 4.0</h1>
-            <h3>{T("welcome")}</h3>
+            <h3>Your AI-powered health and wellness companion</h3>
             <p>🤖 AI Assistant | 🥗 Nutrition | 🏃 Fitness | 📊 Reports</p>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    col1, col2, col3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
 
-    col1.metric("🩺 Predictions", len(st.session_state.history))
-    col2.metric("💬 Chat messages", len(st.session_state.chat_history))
-    col3.metric(
+    c1.metric("🩺 Predictions", len(st.session_state.history))
+    c2.metric("💬 Chat messages", len(st.session_state.chat_history))
+    c3.metric(
         "🧠 Diabetes model",
         "Loaded" if model is not None else "Not loaded"
     )
 
     st.subheader("✨ Explore HealthPredict AI")
 
-    c1, c2 = st.columns(2)
+    left, right = st.columns(2)
 
-    with c1:
+    with left:
         st.markdown(
-            '<div class="feature-card"><h3>🤖 AI Health Assistant</h3>'
-            '<p>Ask health-related questions in Tamil or English.</p></div>',
-            unsafe_allow_html=True
-        )
-        st.markdown(
-            '<div class="feature-card"><h3>🥗 Healthy Food Guide</h3>'
-            '<p>Explore balanced meals and nutrition tips.</p></div>',
+            """
+            <div class="feature-card">
+                <h3>🤖 AI Health Assistant</h3>
+                <p>Ask health questions in Tamil and English.</p>
+            </div>
+            <div class="feature-card">
+                <h3>🥗 Healthy Food Guide</h3>
+                <p>Explore balanced meals and nutrition tips.</p>
+            </div>
+            """,
             unsafe_allow_html=True
         )
 
-    with c2:
+    with right:
         st.markdown(
-            '<div class="feature-card"><h3>🩺 Diabetes Risk Prediction</h3>'
-            '<p>Use your existing trained ANN model.</p></div>',
-            unsafe_allow_html=True
-        )
-        st.markdown(
-            '<div class="feature-card"><h3>📊 Health Reports</h3>'
-            '<p>Download PDF and Excel summaries.</p></div>',
+            """
+            <div class="feature-card">
+                <h3>🩺 Diabetes Risk Prediction</h3>
+                <p>Use your existing trained ANN model.</p>
+            </div>
+            <div class="feature-card">
+                <h3>📊 Health Reports</h3>
+                <p>Download PDF and Excel summaries.</p>
+            </div>
+            """,
             unsafe_allow_html=True
         )
 
     if model_error:
-        st.warning("Diabetes model could not be loaded: " + model_error)
+        st.warning("Diabetes model loading issue: " + model_error)
 
-    st.info(T("disclaimer"))
+    st.info(TEXT["disclaimer"])
 
 
-# --------------------------------------------------
-# 8. DIABETES RISK PREDICTION
-# --------------------------------------------------
+# =========================================================
+# 10. DIABETES RISK PREDICTION
+# =========================================================
 
-elif page == T("prediction"):
+elif page == TEXT["prediction"]:
 
-    st.title(T("prediction"))
+    st.title(TEXT["prediction"])
+
     st.info(
-        "This prediction uses your existing diabetes model. "
+        "This prediction uses your existing diabetes model only. "
         "It does not detect other diseases."
     )
 
     if model is None:
+
         st.error(
-            "Model files could not be loaded. Check that all three "
-            "model files are in the same GitHub folder as app.py."
+            "Diabetes model could not be loaded. "
+            "Check the three model files in your GitHub repository."
         )
-        st.code(model_error or "Unknown model loading error")
+
+        st.code(model_error or "Unknown model error")
 
     else:
-        with st.form("diabetes_form"):
+
+        with st.form("diabetes_prediction_form"):
 
             st.subheader("🧍 Enter Health Details")
 
-            c1, c2 = st.columns(2)
+            left, right = st.columns(2)
 
-            with c1:
+            with left:
                 pregnancies = st.number_input(
                     "Pregnancies",
                     min_value=0,
                     max_value=20,
                     value=0
                 )
+
                 glucose = st.number_input(
                     "Glucose (mg/dL)",
                     min_value=0.0,
                     max_value=500.0,
                     value=120.0
                 )
+
                 bp = st.number_input(
                     "Blood Pressure (mm Hg)",
                     min_value=0.0,
                     max_value=250.0,
                     value=70.0
                 )
+
                 skin = st.number_input(
                     "Skin Thickness (mm)",
                     min_value=0.0,
@@ -647,25 +657,28 @@ elif page == T("prediction"):
                     value=20.0
                 )
 
-            with c2:
+            with right:
                 insulin = st.number_input(
                     "Insulin (mu U/ml)",
                     min_value=0.0,
                     max_value=1000.0,
                     value=80.0
                 )
+
                 bmi = st.number_input(
                     "BMI",
                     min_value=0.0,
                     max_value=100.0,
                     value=25.0
                 )
+
                 dpf = st.number_input(
                     "Diabetes Pedigree Function",
                     min_value=0.0,
                     max_value=3.0,
                     value=0.5
                 )
+
                 age = st.number_input(
                     "Age",
                     min_value=1,
@@ -674,11 +687,12 @@ elif page == T("prediction"):
                 )
 
             submitted = st.form_submit_button(
-                "🔍 " + T("predict"),
+                "🔍 " + TEXT["predict"],
                 use_container_width=True
             )
 
         if submitted:
+
             input_values = {
                 "Pregnancies": pregnancies,
                 "Glucose": glucose,
@@ -691,21 +705,18 @@ elif page == T("prediction"):
             }
 
             try:
-                if set(feature_names) != set(input_values.keys()):
-                    raise ValueError(
-                        "The saved feature names do not match the "
-                        "expected diabetes model inputs."
-                    )
-
                 input_df = pd.DataFrame(
                     [[input_values[name] for name in feature_names]],
                     columns=feature_names
                 )
 
                 scaled_input = scaler.transform(input_df)
+
                 probability = float(
-                    model.predict(scaled_input, verbose=0)[0][0]
+                    model.predict(scaled_input, verbose=0).reshape(-1)[0]
                 )
+
+                probability = min(max(probability, 0.0), 1.0)
 
                 result = (
                     "Higher predicted risk"
@@ -715,69 +726,73 @@ elif page == T("prediction"):
 
                 score = round(probability * 100, 2)
 
-                st.session_state.last_prediction = {
-                    "result": result,
-                    "score": score,
-                    "age": age,
-                    "bmi": bmi
-                }
-
                 record = {
                     "date": datetime.now().strftime("%d-%m-%Y %H:%M"),
                     "result": result,
                     "score": score,
-                    "age": age,
-                    "bmi": bmi
+                    "age": int(age),
+                    "bmi": float(bmi)
                 }
 
+                st.session_state.last_prediction = record
                 st.session_state.history.append(record)
 
-                st.subheader("📊 " + T("result"))
+                st.subheader("📊 Prediction Result")
 
                 if probability >= 0.5:
-                    st.warning("⚠️ " + T("high"))
+                    st.warning("⚠️ Higher predicted risk")
                 else:
-                    st.success("✅ " + T("low"))
+                    st.success("✅ Lower predicted risk")
 
                 st.metric("Model score", f"{score}%")
-                st.progress(min(max(probability, 0.0), 1.0))
+                st.progress(probability)
 
                 st.caption(
-                    "This is the model's estimated probability, not "
-                    "your confirmed chance of having diabetes."
+                    "This is the model's estimated probability, not a "
+                    "confirmed chance of having diabetes."
                 )
 
                 st.info(
-                    "Please discuss your result with a qualified "
-                    "healthcare professional. A blood test and clinical "
-                    "assessment are needed for diagnosis."
+                    "A clinical assessment and appropriate blood tests "
+                    "are needed for diagnosis. Discuss your result with "
+                    "a qualified healthcare professional."
                 )
 
-            except Exception as error:
-                st.error("Prediction error: " + str(error))
+            except Exception as e:
+                st.error("Prediction error: " + str(e))
 
 
-# --------------------------------------------------
-# 9. GEMINI AI HEALTH ASSISTANT
-# --------------------------------------------------
+# =========================================================
+# 11. GEMINI AI HEALTH ASSISTANT
+# =========================================================
 
-elif page == T("assistant"):
+elif page == TEXT["assistant"]:
 
-    st.title(T("assistant"))
+    st.title(TEXT["assistant"])
+
     st.caption("Powered by Google Gemini | Tamil + English")
 
     st.info(
-        "Ask about general health, diseases, symptoms, nutrition, "
-        "fitness and prevention. This assistant cannot diagnose diseases."
+        "Ask about health, diseases, symptoms, nutrition, fitness "
+        "and prevention. This assistant cannot diagnose diseases."
     )
 
+    if not GEMINI_AVAILABLE:
+        st.error(
+            "Gemini SDK could not be imported. Check requirements.txt "
+            "and Streamlit Cloud logs."
+        )
+        st.code(str(GEMINI_IMPORT_ERROR))
+
     for message in st.session_state.chat_history:
+
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    question = st.chat_input(T("ask"))
+    question = st.chat_input(TEXT["ask"])
 
     if question:
+
         st.session_state.chat_history.append({
             "role": "user",
             "content": question
@@ -787,13 +802,17 @@ elif page == T("assistant"):
             st.markdown(question)
 
         with st.chat_message("assistant"):
-            with st.spinner("🤖 Thinking..."):
+
+            with st.spinner("🤖 Gemini is thinking..."):
+
                 try:
                     answer = ask_gemini(question)
-                except Exception as error:
+
+                except Exception as e:
                     answer = (
-                        "Gemini request failed. Please check your API key "
-                        "and try again.\n\nError: " + str(error)
+                        "Gemini request failed. Check your API key, "
+                        "model access and internet connection.\n\n"
+                        + str(e)
                     )
 
                 st.markdown(answer)
@@ -803,21 +822,22 @@ elif page == T("assistant"):
             "content": answer
         })
 
-    if st.button("🗑️ " + T("clear")):
+    if st.button("🗑️ " + TEXT["clear"]):
         st.session_state.chat_history = []
         st.rerun()
 
 
-# --------------------------------------------------
-# 10. HEALTHY FOOD GUIDE
-# --------------------------------------------------
+# =========================================================
+# 12. HEALTHY FOOD GUIDE
+# =========================================================
 
-elif page == T("food"):
+elif page == TEXT["food"]:
 
-    st.title(T("food"))
-    st.write("🥑 Explore balanced food choices and everyday nutrition.")
+    st.title(TEXT["food"])
 
-    st.subheader("🍽️ Balanced Indian Meal Ideas")
+    st.write(
+        "🥑 Simple balanced Indian meal ideas for general wellness."
+    )
 
     meals = {
         "🌅 Breakfast": [
@@ -834,7 +854,7 @@ elif page == T("food"):
         ],
         "🌙 Dinner": [
             "Chapati with vegetable kurma",
-            "Vegetable soup with protein source",
+            "Vegetable soup with a protein source",
             "Millet dosa with sambar"
         ],
         "🍎 Snacks": [
@@ -846,34 +866,36 @@ elif page == T("food"):
     }
 
     for meal, items in meals.items():
+
         with st.expander(meal, expanded=True):
             for item in items:
                 st.write("• " + item)
 
     st.subheader("💡 Healthy Eating Tips")
+
     st.markdown("""
     - 🥦 Include different vegetables and fruits.
-    - 🫘 Add protein sources such as dal, beans, eggs or fish.
-    - 🌾 Prefer whole grains and fibre-rich foods.
+    - 🫘 Include protein sources such as dal, beans, eggs or fish.
+    - 🌾 Choose whole grains and fibre-rich foods.
     - 💧 Drink water regularly.
     - 🍬 Limit sugary drinks and highly processed snacks.
-    - ⚖️ Choose portions that suit your individual needs.
+    - ⚖️ Choose portions suited to your individual needs.
     """)
 
     st.warning(
         "People with diabetes, kidney disease, food allergies or other "
         "medical conditions may need individual diet advice from a "
-        "registered dietitian or doctor."
+        "qualified healthcare professional or registered dietitian."
     )
 
 
-# --------------------------------------------------
-# 11. EXERCISE & FITNESS
-# --------------------------------------------------
+# =========================================================
+# 13. EXERCISE & FITNESS
+# =========================================================
 
-elif page == T("exercise"):
+elif page == TEXT["exercise"]:
 
-    st.title(T("exercise"))
+    st.title(TEXT["exercise"])
 
     st.subheader("🚶 Beginner Weekly Activity Ideas")
 
@@ -897,7 +919,11 @@ elif page == T("exercise"):
         ]
     })
 
-    st.dataframe(workout, use_container_width=True, hide_index=True)
+    st.dataframe(
+        workout,
+        use_container_width=True,
+        hide_index=True
+    )
 
     st.subheader("🏋️ Simple Beginner Exercises")
 
@@ -920,20 +946,19 @@ elif page == T("exercise"):
     )
 
 
-# --------------------------------------------------
-# 12. HEALTH LEARNING CENTER
-# --------------------------------------------------
+# =========================================================
+# 14. HEALTH LEARNING CENTER
+# =========================================================
 
-elif page == T("learning"):
+elif page == TEXT["learning"]:
 
-    st.title(T("learning"))
+    st.title(TEXT["learning"])
 
     topics = {
         "🩸 Diabetes": (
             "Diabetes is a condition involving high blood glucose. "
-            "There are different types, including type 1, type 2 and "
-            "gestational diabetes. Diagnosis requires appropriate "
-            "laboratory tests."
+            "Types include type 1, type 2 and gestational diabetes. "
+            "Diagnosis requires appropriate laboratory tests."
         ),
         "❤️ Blood Pressure": (
             "Blood pressure measures the force of blood against artery "
@@ -961,64 +986,77 @@ elif page == T("learning"):
     }
 
     for topic, description in topics.items():
+
         with st.expander(topic):
             st.write(description)
 
     st.warning(
-        "This learning center provides general education, not diagnosis "
-        "or treatment advice."
+        "This learning center provides general education, "
+        "not diagnosis or treatment advice."
     )
 
 
-# --------------------------------------------------
-# 13. REPORTS & DOWNLOADS
-# --------------------------------------------------
+# =========================================================
+# 15. REPORTS & DOWNLOADS
+# =========================================================
 
-elif page == T("reports"):
+elif page == TEXT["reports"]:
 
-    st.title(T("reports"))
-    st.write(T("report"))
+    st.title(TEXT["reports"])
 
-    if st.session_state.last_prediction:
-        last = st.session_state.last_prediction
+    last = st.session_state.last_prediction
+
+    if last:
 
         c1, c2, c3 = st.columns(3)
+
         c1.metric("Latest result", last["result"])
         c2.metric("Model score", f"{last['score']}%")
         c3.metric("BMI", last["bmi"])
 
     else:
+
         st.info(
-            "No prediction yet. You can still download an empty report. "
-            "Run a prediction to include your latest result."
+            "No prediction yet. Run a prediction to include its result "
+            "in your report."
         )
 
     st.subheader("📄 PDF Report")
 
-    pdf_data = create_pdf_report()
+    try:
+        pdf_data = create_pdf_report()
 
-    st.download_button(
-        label="⬇️ Download PDF Report",
-        data=pdf_data,
-        file_name="HealthPredict_AI_Report.pdf",
-        mime="application/pdf",
-        use_container_width=True
-    )
+        st.download_button(
+            "⬇️ Download PDF Report",
+            data=pdf_data,
+            file_name="HealthPredict_AI_Report.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+
+    except Exception as e:
+        st.error("PDF report error: " + str(e))
 
     st.subheader("📊 Excel Report")
 
-    excel_data = create_excel_report()
+    try:
+        excel_data = create_excel_report()
 
-    st.download_button(
-        label="⬇️ Download Excel Report",
-        data=excel_data,
-        file_name="HealthPredict_AI_Report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+        st.download_button(
+            "⬇️ Download Excel Report",
+            data=excel_data,
+            file_name="HealthPredict_AI_Report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    except Exception as e:
+        st.error("Excel report error: " + str(e))
 
     if st.session_state.history:
+
         st.subheader("📈 Prediction History")
+
         st.dataframe(
             pd.DataFrame(st.session_state.history),
             use_container_width=True,
@@ -1026,35 +1064,36 @@ elif page == T("reports"):
         )
 
 
-# --------------------------------------------------
-# 14. ABOUT
-# --------------------------------------------------
+# =========================================================
+# 16. ABOUT
+# =========================================================
 
-elif page == T("about"):
+elif page == TEXT["about"]:
 
-    st.title("ℹ️ About HealthPredict AI 4.0")
+    st.title(TEXT["about"])
 
     st.markdown("""
-    **HealthPredict AI** is an educational health and wellness project.
+    ## 🩺 HealthPredict AI 4.0
 
-    ### Main modules
+    An educational AI health and wellness project.
+
+    ### ✨ Main Features
+
     - 🩺 Diabetes risk estimation using an existing ANN model
     - 🤖 Gemini-powered health education assistant
-    - 🥗 Healthy food and nutrition information
-    - 🏃 Beginner exercise and fitness guidance
-    - 📚 General health learning center
-    - 📊 PDF and Excel report downloads
     - 🌐 Tamil and English interface
-    - 🎨 Multiple color themes
+    - 🥗 Healthy food and nutrition guide
+    - 🏃 Beginner exercise and fitness information
+    - 📚 General health learning center
+    - 📊 Prediction history
+    - 📄 PDF health report
+    - 📈 Excel report
+    - 🎨 Multiple UI themes
 
-    ### Technology
-    - Python
-    - Streamlit
-    - TensorFlow / Keras
-    - Scikit-learn
-    - Google Gemini API
-    - Pandas and NumPy
-    - ReportLab and OpenPyXL
+    ### 🛠️ Technologies
+
+    Python, Streamlit, TensorFlow, Keras, Scikit-learn,
+    Google Gemini API, Pandas, NumPy, ReportLab and OpenPyXL.
     """)
 
     st.error(
@@ -1067,13 +1106,13 @@ elif page == T("about"):
     )
 
 
-# --------------------------------------------------
-# 15. FOOTER
-# --------------------------------------------------
+# =========================================================
+# 17. FOOTER
+# =========================================================
 
 st.divider()
 
 st.caption(
-    "🩺 HealthPredict AI 4.0 | Built for health education and wellness | "
+    "🩺 HealthPredict AI 4.0 | Health education and wellness | "
     "Not a substitute for professional medical care."
 )
